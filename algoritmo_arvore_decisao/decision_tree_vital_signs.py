@@ -3,7 +3,7 @@ import re
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import (
-    train_test_split, GridSearchCV, learning_curve, StratifiedKFold
+    train_test_split, learning_curve, StratifiedKFold
 )
 from sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier, plot_tree
 from sklearn.metrics import (
@@ -17,10 +17,12 @@ from dataclasses import dataclass, field
 
 @dataclass
 class Config:
+    REGRESSOR_PARAMS: Dict[str, Any]
+    CLASSIFIER_PARAMS: Dict[str, Any]
     BASE_DIR: str = field(default_factory=lambda: os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd())
     LABELED_DATA_FILENAME: str = "Vital Signs Training with Label.txt"
     BLIND_DATA_FILENAME: str = "Vital Signs Training No Label.txt"
-    OUTPUT_CSV_FILENAME: str = "predicoes_blind_otimizado_feats_corrigidas.csv"
+    OUTPUT_CSV_FILENAME: str = "predicoes_blind_feats_corrigidas.csv"
     DECISION_TREE_IMAGE_FILENAME: str = "decision_tree_classifier.png"
 
     FEATURE_COLUMNS: List[str] = field(default_factory=lambda: ["si3", "si4", "si5"])
@@ -37,21 +39,6 @@ class Config:
     TEST_SPLIT_SIZE: float = 0.3
     CV_SPLITS: int = 5
     LEARNING_CURVE_TRAIN_SIZES: np.ndarray = field(default_factory=lambda: np.linspace(0.1, 1.0, 10))
-
-    REGRESSOR_PARAMS_GRID: Dict[str, List[Any]] = field(default_factory=lambda: {
-        "max_depth": [3, 5, 7, 10, 12],
-        "min_samples_leaf": [5, 10, 15, 20],
-        "max_leaf_nodes": [10, 20, 30, 50],
-        "min_impurity_decrease": [1e-3, 1e-2, 5e-2],
-        "ccp_alpha": [0.001, 0.005, 0.01, 0.02, 0.05, 0.1]
-    })
-    CLASSIFIER_PARAMS_GRID: Dict[str, List[Any]] = field(default_factory=lambda: {
-        "max_depth": [3, 5, 7, 10, 12],
-        "min_samples_leaf": [5, 10, 15, 20],
-        "criterion": ["gini", "entropy"],
-        "class_weight": [None, "balanced"],
-        "ccp_alpha": [0.0001, 0.001, 0.005, 0.01, 0.015, 0.02, 0.05]
-    })
 
     PLOT_FIG_SIZE_TREE: Tuple[int, int] = (60, 30)
     PLOT_FONT_SIZE_TREE: int = 7
@@ -107,60 +94,42 @@ class ModelTrainer:
     def __init__(self, config: Config):
         self.config = config
 
-    def _train_with_gridsearch(
-        self,
-        model_instance: Union[DecisionTreeRegressor, DecisionTreeClassifier],
-        param_grid: Dict[str, List[Any]],
-        X_train: pd.DataFrame,
-        y_train: pd.Series,
-        cv: Union[int, StratifiedKFold],
-        scoring: str
-    ) -> Tuple[Any, float]:
-        gs = GridSearchCV(
-            model_instance, param_grid,
-            cv=cv, scoring=scoring, n_jobs=-1, verbose=1
+    def train_regressor(self, X_train: pd.DataFrame, y_train: pd.Series) -> DecisionTreeRegressor:
+        regressor = DecisionTreeRegressor(
+            random_state=self.config.RANDOM_STATE_MODEL,
+            **self.config.REGRESSOR_PARAMS
         )
-        gs.fit(X_train, y_train)
-        print(f"\nMelhores parâmetros para {model_instance.__class__.__name__}: {gs.best_params_}")
-        print(f"Melhor score CV ({scoring}): {gs.best_score_:.4f}\n")
-        return gs.best_estimator_, gs.best_score_
+        regressor.fit(X_train, y_train)
+        return regressor
 
-    def train_regressor(self, X_train: pd.DataFrame, y_train: pd.Series) -> Tuple[DecisionTreeRegressor, float]:
-        regressor = DecisionTreeRegressor(random_state=self.config.RANDOM_STATE_MODEL)
-        return self._train_with_gridsearch(
-            regressor, self.config.REGRESSOR_PARAMS_GRID, X_train, y_train,
-            cv=self.config.CV_SPLITS, scoring="neg_mean_squared_error"
+    def train_classifier(self, X_train: pd.DataFrame, y_train: pd.Series) -> DecisionTreeClassifier:
+        classifier = DecisionTreeClassifier(
+            random_state=self.config.RANDOM_STATE_MODEL,
+            **self.config.CLASSIFIER_PARAMS
         )
-
-    def train_classifier(self, X_train: pd.DataFrame, y_train: pd.Series, cv_splitter: StratifiedKFold) -> Tuple[DecisionTreeClassifier, float]:
-        classifier = DecisionTreeClassifier(random_state=self.config.RANDOM_STATE_MODEL)
-        return self._train_with_gridsearch(
-            classifier, self.config.CLASSIFIER_PARAMS_GRID, X_train, y_train,
-            cv=cv_splitter, scoring="accuracy"
-        )
+        classifier.fit(X_train, y_train)
+        return classifier
 
 class ModelEvaluator:
     def __init__(self, config: Config):
         self.config = config
 
-    def evaluate_regressor(self, model: DecisionTreeRegressor, X_val: pd.DataFrame, y_val: pd.Series, best_cv_score: float) -> float:
+    def evaluate_regressor(self, model: DecisionTreeRegressor, X_val: pd.DataFrame, y_val: pd.Series) -> float:
         preds_reg_val = model.predict(X_val)
         rmse_val = np.sqrt(mean_squared_error(y_val, preds_reg_val))
-        print("\n\n— Avaliação da Regressão (conjunto de validação) —")
-        print(f" RMSE (validação) : {rmse_val:.3f}")
-        print(f" Melhor CV RMSE (sqrt(-neg_mse)): {np.sqrt(-best_cv_score):.3f}\n")
+        print("\\n\\n— Avaliação da Regressão (conjunto de validação) —")
+        print(f" RMSE (validação) : {rmse_val:.3f}\\n")
         return rmse_val
 
-    def evaluate_classifier(self, model: DecisionTreeClassifier, X_val: pd.DataFrame, y_val: pd.Series, best_cv_score: float) -> Tuple[float, str, np.ndarray]:
+    def evaluate_classifier(self, model: DecisionTreeClassifier, X_val: pd.DataFrame, y_val: pd.Series) -> Tuple[float, str, np.ndarray]:
         preds_clf_val = model.predict(X_val)
         acc_val = accuracy_score(y_val, preds_clf_val)
         report = classification_report(y_val, preds_clf_val, zero_division=0)
         cm = confusion_matrix(y_val, preds_clf_val)
 
-        print("\n— Avaliação da Classificação (conjunto de validação) —")
-        print(f" Acurácia (validação): {acc_val:.3f}")
-        print(f" Melhor CV Acurácia : {best_cv_score:.3f}\n")
-        print("\nRelatório de Classificação (validação):")
+        print("\\n— Avaliação da Classificação (conjunto de validação) —")
+        print(f" Acurácia (validação): {acc_val:.3f}\\n")
+        print("\\nRelatório de Classificação (validação):")
         print(report)
         print()
         return acc_val, report, cm
@@ -168,7 +137,7 @@ class ModelEvaluator:
     def calculate_blind_rmse(self, model: DecisionTreeRegressor, X_blind: pd.DataFrame, y_blind_true: pd.Series) -> float:
         preds_gi_blind = model.predict(X_blind)
         rmse_blind_test = np.sqrt(mean_squared_error(y_blind_true, preds_gi_blind))
-        print(f"\n— Regressão (teste cego) — RMSE cego: {rmse_blind_test:.3f}\n")
+        print(f"\\n— Regressão (teste cego) — RMSE cego: {rmse_blind_test:.3f}\\n")
         return rmse_blind_test
 
 class Visualizer:
@@ -243,7 +212,7 @@ class Visualizer:
         plt.plot(train_sizes, val_scores_mean, 'o-',  label=f"{y_label} Validação")
         plt.xlabel("Tamanho do Treino")
         plt.ylabel(y_label)
-        plt.title(f"Curva de Aprendizado - {title_suffix} (Modelo Otimizado)")
+        plt.title(f"Curva de Aprendizado - {title_suffix}")
         plt.legend()
         plt.grid(True)
         plt.tight_layout()
@@ -263,7 +232,7 @@ class Visualizer:
                   proportion=False,
                   max_depth=15
                   )
-        plt.title("Árvore de Decisão - Classificador (Otimizado)")
+        plt.title("Árvore de Decisão - Classificador ()")
         try:
             plt.savefig(self.config.DECISION_TREE_IMAGE_FILE, dpi=300, bbox_inches='tight')
             print(f"Árvore de decisão do classificador salva em: {self.config.DECISION_TREE_IMAGE_FILE}\n")
@@ -287,20 +256,104 @@ class PredictionSaver:
         except Exception as e:
             print(f"Erro ao salvar as predições: {e}\n")
 
+class ResultsSummary:
+    def __init__(self, config: Config):
+        self.config = config
+        self.results = {}
+    
+    def add_result(self, key: str, value: Any) -> None:
+        """Add a result to the summary"""
+        self.results[key] = value
+    
+    def display_complete_summary(self) -> None:
+        """Display comprehensive summary of all parameters and results"""
+        print("\n" + "="*80)
+        print("RESUMO COMPLETO DOS RESULTADOS E PARÂMETROS")
+        print("="*80)
+        
+        print("\n📋 PARÂMETROS DE ENTRADA:")
+        print("-" * 50)
+        
+        print("\n🔹 Configurações Gerais:")
+        print(f"  • Colunas de Features: {self.config.FEATURE_COLUMNS}")
+        print(f"  • Coluna Alvo (Regressão): {self.config.REGRESSION_TARGET_COLUMN}")
+        print(f"  • Coluna Alvo (Classificação): {self.config.CLASSIFICATION_TARGET_COLUMN}")
+        print(f"  • Coluna ID: {self.config.ID_COLUMN}")
+        print(f"  • Tamanho do Conjunto de Teste: {self.config.TEST_SPLIT_SIZE}")
+        print(f"  • Número de Folds CV: {self.config.CV_SPLITS}")
+        print(f"  • Random State (Split): {self.config.RANDOM_STATE_SPLIT}")
+        print(f"  • Random State: {self.config.RANDOM_STATE_MODEL}")
+        
+        print("\n🔹 Parâmetros do Regressor (DecisionTreeRegressor):")
+        for param, value in self.config.REGRESSOR_PARAMS.items():
+            print(f"  • {param}: {value}")
+        
+        print("\n🔹 Parâmetros do Classificador (DecisionTreeClassifier):")
+        for param, value in self.config.CLASSIFIER_PARAMS.items():
+            print(f"  • {param}: {value}")
+        
+        print("\n📊 RESULTADOS OBTIDOS:")
+        print("-" * 50)
+        
+        if 'validation_rmse' in self.results:
+            print(f"\n🔸 Regressão - Conjunto de Validação:")
+            print(f"  • RMSE: {self.results['validation_rmse']:.4f}")
+        
+        if 'blind_rmse' in self.results:
+            print(f"\n🔸 Regressão - Conjunto Cego:")
+            print(f"  • RMSE: {self.results['blind_rmse']:.4f}")
+        
+        if 'validation_accuracy' in self.results:
+            print(f"\n🔸 Classificação - Conjunto de Validação:")
+            print(f"  • Acurácia: {self.results['validation_accuracy']:.4f}")
+        
+        if 'regressor_importances' in self.results:
+            print(f"\n🔸 Importância das Features - Regressor:")
+            for feature, importance in self.results['regressor_importances'].items():
+                print(f"  • {feature}: {importance:.4f}")
+        
+        if 'classifier_importances' in self.results:
+            print(f"\n🔸 Importância das Features - Classificador:")
+            for feature, importance in self.results['classifier_importances'].items():
+                print(f"  • {feature}: {importance:.4f}")
+        
+        if 'dataset_info' in self.results:
+            print(f"\n🔸 Informações do Dataset:")
+            info = self.results['dataset_info']
+            print(f"  • Total de amostras rotuladas: {info['total_labeled']}")
+            print(f"  • Amostras de treino (regressão): {info['train_reg']}")
+            print(f"  • Amostras de validação (regressão): {info['val_reg']}")
+            print(f"  • Amostras de treino (classificação): {info['train_clf']}")
+            print(f"  • Amostras de validação (classificação): {info['val_clf']}")
+            print(f"  • Amostras do conjunto cego: {info['blind_samples']}")
+        
+        print(f"\n📁 ARQUIVOS GERADOS:")
+        print("-" * 50)
+        print(f"  • Predições CSV: {self.config.OUTPUT_CSV_FILENAME}")
+        print(f"  • Árvore de Decisão: {self.config.DECISION_TREE_IMAGE_FILENAME}")
+        
+        print("\n" + "="*80)
+        print("FIM DO RESUMO")
+        print("="*80 + "\n")
+
 class DecisionTreeAnalysisPipeline:
-    def __init__(self):
-        self.config = Config()
+    def __init__(self, regressor_params: Dict[str, Any], classifier_params: Dict[str, Any]):
+        self.config = Config(
+            REGRESSOR_PARAMS=regressor_params,
+            CLASSIFIER_PARAMS=classifier_params
+        )
         self.data_loader = DataLoader(self.config)
         self.model_trainer = ModelTrainer(self.config)
         self.model_evaluator = ModelEvaluator(self.config)
         self.visualizer = Visualizer(self.config)
         self.prediction_saver = PredictionSaver(self.config)
+        self.results_summary = ResultsSummary(self.config)
 
     def run(self) -> None:
-        print("\n--- Carregando Dados Rotulados ---")
+        print("\\n--- Carregando Dados Rotulados ---")
         X_labeled, y_reg_labeled, y_clf_labeled = self.data_loader.get_labeled_data()
 
-        print("\n\n--- Dividindo Dados para Treino e Validação ---")
+        print("\\n\\n--- Dividindo Dados para Treino e Validação ---")
         X_train_reg, X_val_reg, y_train_reg, y_val_reg = train_test_split(
             X_labeled, y_reg_labeled, test_size=self.config.TEST_SPLIT_SIZE,
             random_state=self.config.RANDOM_STATE_SPLIT, shuffle=True
@@ -312,29 +365,28 @@ class DecisionTreeAnalysisPipeline:
             random_state=self.config.RANDOM_STATE_SPLIT, shuffle=True, stratify=y_clf_labeled
         )
 
-        print("\n\n--- Treinamento do Regressor ---")
-        best_regressor, best_reg_cv_score = self.model_trainer.train_regressor(X_train_reg, y_train_reg)
+        print("\\n\\n--- Treinamento do Regressor ---")
+        best_regressor = self.model_trainer.train_regressor(X_train_reg, y_train_reg)
 
-        print("\n\n--- Treinamento do Classificador ---")
-        skf_for_gridsearch_clf = StratifiedKFold(n_splits=self.config.CV_SPLITS, shuffle=True, random_state=self.config.RANDOM_STATE_MODEL)
-        best_classifier, best_clf_cv_score = self.model_trainer.train_classifier(X_train_clf, y_train_clf, skf_for_gridsearch_clf)
+        print("\\n\\n--- Treinamento do Classificador ---")
+        best_classifier = self.model_trainer.train_classifier(X_train_clf, y_train_clf)
 
-        print("\n\n--- Avaliação dos Modelos no Conjunto de Validação ---")
-        self.model_evaluator.evaluate_regressor(best_regressor, X_val_reg, y_val_reg, best_reg_cv_score)
-        _, _, cm_val = self.model_evaluator.evaluate_classifier(best_classifier, X_val_clf, y_val_clf, best_clf_cv_score)
+        print("\\n\\n--- Avaliação dos Modelos no Conjunto de Validação ---")
+        validation_rmse = self.model_evaluator.evaluate_regressor(best_regressor, X_val_reg, y_val_reg)
+        validation_accuracy, _, cm_val = self.model_evaluator.evaluate_classifier(best_classifier, X_val_clf, y_val_clf)
         self.visualizer.plot_confusion_matrix_heatmap(
             cm_val, classes=[str(c) for c in np.unique(y_val_clf)],
-            title="Matriz de Confusão - Validação (Modelo Otimizado)"
+            title="Matriz de Confusão - Validação"
         )
 
         print("\n\n--- Importância das Features ---")
-        self.visualizer.display_feature_importances(best_regressor, self.config.FEATURE_COLUMNS, "DecisionTreeRegressor (Otimizado)")
-        self.visualizer.display_feature_importances(best_classifier, self.config.FEATURE_COLUMNS, "DecisionTreeClassifier (Otimizado)")
+        self.visualizer.display_feature_importances(best_regressor, self.config.FEATURE_COLUMNS, "DecisionTreeRegressor ()")
+        self.visualizer.display_feature_importances(best_classifier, self.config.FEATURE_COLUMNS, "DecisionTreeClassifier ()")
 
         print("\n\n--- Carregando Dados Cegos e Realizando Predições ---")
         X_blind, gi_blind_true, ids_blind = self.data_loader.get_blind_data()
 
-        self.model_evaluator.calculate_blind_rmse(best_regressor, X_blind, gi_blind_true)
+        blind_rmse = self.model_evaluator.calculate_blind_rmse(best_regressor, X_blind, gi_blind_true)
         preds_yi_blind = best_classifier.predict(X_blind)
         preds_gi_blind = best_regressor.predict(X_blind)
 
@@ -358,8 +410,42 @@ class DecisionTreeAnalysisPipeline:
             class_names=[str(c) for c in best_classifier.classes_]
         )
 
+        self.results_summary.add_result("validation_rmse", validation_rmse)
+        self.results_summary.add_result("blind_rmse", blind_rmse)
+        self.results_summary.add_result("validation_accuracy", validation_accuracy)
+        self.results_summary.add_result("regressor_importances", dict(zip(self.config.FEATURE_COLUMNS, best_regressor.feature_importances_)))
+        self.results_summary.add_result("classifier_importances", dict(zip(self.config.FEATURE_COLUMNS, best_classifier.feature_importances_)))
+        self.results_summary.add_result("dataset_info", {
+            "total_labeled": len(X_labeled),
+            "train_reg": len(X_train_reg),
+            "val_reg": len(X_val_reg),
+            "train_clf": len(X_train_clf),
+            "val_clf": len(X_val_clf),
+            "blind_samples": len(X_blind)
+        })
+
         print("\n\n--- Análise Concluída ---\n")
+        self.results_summary.display_complete_summary()
 
 if __name__ == "__main__":
-    pipeline = DecisionTreeAnalysisPipeline()
+    custom_regressor_params = {
+        "max_depth": 7,
+        "min_samples_leaf": 10,
+        "max_leaf_nodes": 30,
+        "min_impurity_decrease": 0.001,
+        "ccp_alpha": 0.01
+    }
+
+    custom_classifier_params = {
+        "max_depth": 7,
+        "min_samples_leaf": 5,
+        "criterion": "gini",
+        "class_weight": "balanced",
+        "ccp_alpha": 0.001
+    }
+
+    pipeline = DecisionTreeAnalysisPipeline(
+        regressor_params=custom_regressor_params,
+        classifier_params=custom_classifier_params
+    )
     pipeline.run()
